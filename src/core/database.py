@@ -3,6 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from sqlalchemy.orm import joinedload
 from sqlalchemy import and_
+from core.cloud_storage import CloudStorage
 
 Base = declarative_base()
 
@@ -36,6 +37,7 @@ class Database:
         self.engine = create_engine(f'sqlite:///{db_path}')
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
+        self.cloud_storage = CloudStorage()
 
     def add_note(self, title, content, url=None, domain=None, keywords=None, author=None, creation_date=None, file_path=None):
         session = self.Session()
@@ -59,6 +61,9 @@ class Database:
             raise
         finally:
             session.close()
+
+        # 添加笔记后更新云端数据库
+        self.cloud_storage.update_cloud_database()
 
     def get_note_by_id(self, note_id):
         session = self.Session()
