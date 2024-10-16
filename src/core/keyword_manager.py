@@ -26,9 +26,5 @@ class KeywordManager:
     def get_notes_by_keyword(self, keyword):
         return self.db.get_notes_by_keyword(keyword)
 
-    def get_all_keywords_with_notes(self):
-        notes_data = self.db.get_all_notes_with_keywords()
-        keyword_notes = {}
-        for keyword, notes in notes_data.items():
-            keyword_notes[keyword] = [{'id': note['id'], 'title': note['title']} for note in notes]
-        return keyword_notes
+    def get_all_notes_with_keywords(self):
+        return self.db.get_all_notes_with_keywords()

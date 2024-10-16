@@ -1,7 +1,8 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, Table, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Text, Table, ForeignKey, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from sqlalchemy.orm import joinedload
+from sqlalchemy import and_
 
 Base = declarative_base()
 
@@ -14,10 +15,13 @@ class Note(Base):
     __tablename__ = 'notes'
 
     id = Column(Integer, primary_key=True)
-    title = Column(String(200))
+    title = Column(String)
     content = Column(Text)
-    url = Column(String(500))
-    domain = Column(String(100))
+    url = Column(String)
+    domain = Column(String)
+    author = Column(String)
+    creation_date = Column(DateTime)
+    file_path = Column(String)
     keywords = relationship('Keyword', secondary=note_keyword, back_populates='notes')
 
 class Keyword(Base):
@@ -33,21 +37,23 @@ class Database:
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
 
-    def add_note(self, title, content, url, domain, keywords=[]):
+    def add_note(self, title, content, url=None, domain=None, keywords=None, author=None, creation_date=None, file_path=None):
         session = self.Session()
         try:
-            new_note = Note(title=title, content=content, url=url, domain=domain)
+            new_note = Note(title=title, content=content, url=url, domain=domain, 
+                            author=author, creation_date=creation_date, file_path=file_path)
             session.add(new_note)
-            session.flush()  # 这会给new_note分配一个ID
+            session.flush()
 
-            for word in keywords:
-                keyword = session.query(Keyword).filter_by(word=word).first()
-                if not keyword:
-                    keyword = Keyword(word=word)
-                new_note.keywords.append(keyword)
+            if keywords:
+                for word in keywords:
+                    keyword = session.query(Keyword).filter(Keyword.word == word).first()
+                    if not keyword:
+                        keyword = Keyword(word=word)
+                    new_note.keywords.append(keyword)
 
             session.commit()
-            return new_note  # 直接返回new_note对象
+            return new_note
         except:
             session.rollback()
             raise
@@ -68,20 +74,15 @@ class Database:
         session.close()
         return notes
 
-    def search_notes(self, query):
+    def search_notes(self, keyword):
         session = self.Session()
         try:
-            notes = session.query(Note).options(joinedload(Note.keywords)).filter(
-                (Note.title.like(f'%{query}%')) |
-                (Note.content.like(f'%{query}%')) |
-                (Note.url.like(f'%{query}%')) |
-                (Note.domain.like(f'%{query}%'))
-            ).all()
+            notes = session.query(Note).join(Note.keywords).filter(Keyword.word == keyword).options(joinedload(Note.keywords)).all()
             
-            # 创建一个包含所需信息的字典列表
             results = []
             for note in notes:
                 results.append({
+                    'id': note.id,
                     'title': note.title,
                     'url': note.url,
                     'keywords': [k.word for k in note.keywords],
@@ -125,20 +126,15 @@ class Database:
             session.close()
 
     def get_all_notes_with_keywords(self):
-        session = self.Session()
-        try:
+        with self.Session() as session:
             notes = session.query(Note).options(joinedload(Note.keywords)).all()
-            result = {}
-            for note in notes:
-                for keyword in note.keywords:
-                    if keyword.word not in result:
-                        result[keyword.word] = []
-                    result[keyword.word].append({
-                        'id': note.id,
-                        'title': note.title,
-                        'url': note.url,
-                        'domain': note.domain
-                    })
-            return result
-        finally:
-            session.close()
+            return [
+                {
+                    'id': note.id,
+                    'title': note.title,
+                    'keywords': [keyword.word for keyword in note.keywords],
+                    'author': note.author,  # 确保这里包含 author
+                    # ... 其他字段 ...
+                }
+                for note in notes
+            ]
