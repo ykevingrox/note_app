@@ -2,6 +2,8 @@ import oss2
 import os
 from dotenv import load_dotenv
 from src.core.logging_config import logger
+import sqlite3
+import hashlib
 
 load_dotenv()  # 加载 .env 文件中的环境变量
 
@@ -31,7 +33,7 @@ class CloudStorage:
             raise
 
     def upload_database(self):
-        logger.info("开始上传数据库")
+        logger.info("开始上数据库")
         try:
             self.bucket.put_object_from_file(self.cloud_db_name, self.local_db_path)
             logger.info(f"数据库上传成功: {self.cloud_db_name}")
@@ -70,32 +72,10 @@ class CloudStorage:
     def update_cloud_database(self):
         self.upload_database()
 
-    def upload_file(self, file_path):
-        logger.info(f"开始上传文件: {file_path}")
-        try:
-            # 上传文件的逻辑
-            ...
-            logger.info(f"文件上传成功: {file_path}")
-        except Exception as e:
-            logger.error(f"文件上传失败: {file_path}. 错误: {str(e)}", exc_info=True)
-            raise
-
-    def delete_file(self, file_path):
-        logger.info(f"开始删除文件: {file_path}")
-        try:
-            # 删除文件的逻辑
-            ...
-            logger.info(f"文件删除成功: {file_path}")
-        except Exception as e:
-            logger.error(f"文件删除失败: {file_path}. 错误: {str(e)}", exc_info=True)
-            raise
-
     def sync_to_cloud(self):
         logger.info("开始同步到云端")
         try:
-            # 这里是您的同步逻辑
-            # ...
-
+            self.upload_database()
             logger.info("同步到云端完成")
         except Exception as e:
             logger.error(f"同步到云端失败: {str(e)}", exc_info=True)
@@ -104,17 +84,35 @@ class CloudStorage:
     def close(self):
         logger.info("开始关闭 CloudStorage")
         try:
-            # 这里是您的关闭逻辑
-            # 例如，确保所有待同步的操作都已完成
             self.sync_to_cloud()
-            
-            # 其他清理操作
-            # ...
-
             logger.info("CloudStorage 成功关闭")
         except Exception as e:
             logger.error(f"关闭 CloudStorage 时发生错误: {str(e)}", exc_info=True)
             raise
+
+    def get_cloud_file_hash(self, file_name):
+        try:
+            cloud_file = self.bucket.get_object(file_name)
+            hasher = hashlib.md5()
+            for chunk in cloud_file:
+                hasher.update(chunk)
+            return hasher.hexdigest()
+        except oss2.exceptions.NoSuchKey:
+            logger.warning(f"云端文件 {file_name} 不存在")
+            return None
+        except Exception as e:
+            logger.error(f"获取云端文件哈希值时出错: {str(e)}")
+            return None
+
+    def download_database_temp(self):
+        temp_path = self.local_db_path + '.temp'
+        try:
+            self.bucket.get_object_to_file(self.cloud_db_name, temp_path)
+            logger.info(f"临时数据库下载成功: {temp_path}")
+            return temp_path
+        except Exception as e:
+            logger.error(f"下载临时数据库时出错: {str(e)}")
+            return None
 
 # 可以添加一个测试函数
 def test_cloud_storage():

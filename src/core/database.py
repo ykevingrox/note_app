@@ -1,145 +1,180 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, Table, ForeignKey, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker
-from sqlalchemy.orm import joinedload
-from sqlalchemy import and_
-from core.cloud_storage import CloudStorage
-
-Base = declarative_base()
-
-note_keyword = Table('note_keyword', Base.metadata,
-    Column('note_id', Integer, ForeignKey('notes.id')),
-    Column('keyword_id', Integer, ForeignKey('keywords.id'))
-)
-
-class Note(Base):
-    __tablename__ = 'notes'
-
-    id = Column(Integer, primary_key=True)
-    title = Column(String)
-    content = Column(Text)
-    url = Column(String)
-    domain = Column(String)
-    author = Column(String)
-    creation_date = Column(DateTime)
-    file_path = Column(String)
-    keywords = relationship('Keyword', secondary=note_keyword, back_populates='notes')
-
-class Keyword(Base):
-    __tablename__ = 'keywords'
-
-    id = Column(Integer, primary_key=True)
-    word = Column(String(50), unique=True)
-    notes = relationship('Note', secondary=note_keyword, back_populates='keywords')
+import sqlite3
+from datetime import datetime
+import os
+from src.core.logging_config import logger
 
 class Database:
     def __init__(self, db_path='notes.db'):
-        self.engine = create_engine(f'sqlite:///{db_path}')
-        Base.metadata.create_all(self.engine)
-        self.Session = sessionmaker(bind=self.engine)
-        self.cloud_storage = CloudStorage()
+        self.db_path = db_path
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        self.cursor = self.conn.cursor()
+        self.create_tables()
+
+    def create_tables(self):
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            content TEXT,
+            url TEXT,
+            domain TEXT,
+            author TEXT,
+            creation_date TEXT,
+            file_path TEXT
+        )
+        ''')
+
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS keywords (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            word TEXT UNIQUE
+        )
+        ''')
+
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS note_keyword (
+            note_id INTEGER,
+            keyword_id INTEGER,
+            FOREIGN KEY (note_id) REFERENCES notes (id),
+            FOREIGN KEY (keyword_id) REFERENCES keywords (id),
+            PRIMARY KEY (note_id, keyword_id)
+        )
+        ''')
+
+        self.conn.commit()
 
     def add_note(self, title, content, url=None, domain=None, keywords=None, author=None, creation_date=None, file_path=None):
-        session = self.Session()
         try:
-            new_note = Note(title=title, content=content, url=url, domain=domain, 
-                            author=author, creation_date=creation_date, file_path=file_path)
-            session.add(new_note)
-            session.flush()
+            self.cursor.execute('''
+            INSERT INTO notes (title, content, url, domain, author, creation_date, file_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (title, content, url, domain, author, creation_date, file_path))
+            
+            note_id = self.cursor.lastrowid
 
             if keywords:
                 for word in keywords:
-                    keyword = session.query(Keyword).filter(Keyword.word == word).first()
-                    if not keyword:
-                        keyword = Keyword(word=word)
-                    new_note.keywords.append(keyword)
+                    self.cursor.execute('INSERT OR IGNORE INTO keywords (word) VALUES (?)', (word,))
+                    self.cursor.execute('SELECT id FROM keywords WHERE word = ?', (word,))
+                    keyword_id = self.cursor.fetchone()[0]
+                    self.cursor.execute('INSERT INTO note_keyword (note_id, keyword_id) VALUES (?, ?)', (note_id, keyword_id))
 
-            session.commit()
-            return new_note
-        except:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-        # 添加笔记后更新云端数据库
-        self.cloud_storage.update_cloud_database()
+            self.conn.commit()
+            return note_id
+        except sqlite3.Error as e:
+            logger.error(f"添加笔记时出错: {e}")
+            self.conn.rollback()
+            return None
 
     def get_note_by_id(self, note_id):
-        session = self.Session()
-        try:
-            note = session.query(Note).options(joinedload(Note.keywords)).get(note_id)
-            return note
-        finally:
-            session.close()
+        self.cursor.execute('''
+        SELECT n.*, GROUP_CONCAT(k.word) as keywords
+        FROM notes n
+        LEFT JOIN note_keyword nk ON n.id = nk.note_id
+        LEFT JOIN keywords k ON nk.keyword_id = k.id
+        WHERE n.id = ?
+        GROUP BY n.id
+        ''', (note_id,))
+        note = self.cursor.fetchone()
+        if note:
+            note_dict = dict(note)
+            note_dict['keywords'] = note_dict['keywords'].split(',') if note_dict['keywords'] else []
+            return note_dict
+        return None
 
     def get_notes_by_keyword(self, keyword):
-        session = self.Session()
-        notes = session.query(Note).join(Note.keywords).filter(Keyword.word == keyword).all()
-        session.close()
-        return notes
+        self.cursor.execute('''
+        SELECT n.*, GROUP_CONCAT(k.word) as keywords
+        FROM notes n
+        JOIN note_keyword nk ON n.id = nk.note_id
+        JOIN keywords k ON nk.keyword_id = k.id
+        WHERE k.word = ?
+        GROUP BY n.id
+        ''', (keyword,))
+        notes = self.cursor.fetchall()
+        return [dict(note) for note in notes]
 
     def search_notes(self, keyword):
-        session = self.Session()
-        try:
-            notes = session.query(Note).join(Note.keywords).filter(Keyword.word == keyword).options(joinedload(Note.keywords)).all()
-            
-            results = []
-            for note in notes:
-                results.append({
-                    'id': note.id,
-                    'title': note.title,
-                    'url': note.url,
-                    'keywords': [k.word for k in note.keywords],
-                    'content': note.content[:200]  # 只取前200个字符作为预览
-                })
-            return results
-        finally:
-            session.close()
+        self.cursor.execute('''
+        SELECT n.id, n.title, n.url, n.content, GROUP_CONCAT(k.word) as keywords
+        FROM notes n
+        LEFT JOIN note_keyword nk ON n.id = nk.note_id
+        LEFT JOIN keywords k ON nk.keyword_id = k.id
+        WHERE n.title LIKE ? OR n.content LIKE ? OR k.word LIKE ?
+        GROUP BY n.id
+        ''', (f'%{keyword}%', f'%{keyword}%', f'%{keyword}%'))
+        notes = self.cursor.fetchall()
+        return [
+            {
+                'id': note['id'],
+                'title': note['title'],
+                'url': note['url'],
+                'keywords': note['keywords'].split(',') if note['keywords'] else [],
+                'content': note['content'][:200]  # 只取前200个字符作为预览
+            }
+            for note in notes
+        ]
 
     def delete_note(self, note_id):
-        session = self.Session()
         try:
-            note = session.query(Note).options(joinedload(Note.keywords)).get(note_id)
-            if note:
-                # 删除笔记与关键词的关联
-                note.keywords.clear()
-                
-                # 删除不再与任何笔记关联的关键词
-                for keyword in session.query(Keyword).all():
-                    if len(keyword.notes) == 0:
-                        session.delete(keyword)
-                
-                # 删除笔记
-                session.delete(note)
-                session.commit()
-                return True
+            self.cursor.execute('DELETE FROM note_keyword WHERE note_id = ?', (note_id,))
+            self.cursor.execute('DELETE FROM notes WHERE id = ?', (note_id,))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"删除笔记时出错: {e}")
+            self.conn.rollback()
             return False
-        except Exception as e:
-            print(f"删除笔记时出错: {e}")
-            session.rollback()
-            return False
-        finally:
-            session.close()
 
     def get_note_id_by_title(self, title):
-        session = self.Session()
-        try:
-            note = session.query(Note).filter(Note.title == title).first()
-            return note.id if note else None
-        finally:
-            session.close()
+        self.cursor.execute('SELECT id FROM notes WHERE title = ?', (title,))
+        result = self.cursor.fetchone()
+        return result['id'] if result else None
 
     def get_all_notes_with_keywords(self):
-        with self.Session() as session:
-            notes = session.query(Note).options(joinedload(Note.keywords)).all()
+        try:
+            self.cursor.execute('''
+            SELECT n.id, n.title, n.author, GROUP_CONCAT(k.word) as keywords
+            FROM notes n
+            LEFT JOIN note_keyword nk ON n.id = nk.note_id
+            LEFT JOIN keywords k ON nk.keyword_id = k.id
+            GROUP BY n.id
+            ''')
+            notes = self.cursor.fetchall()
             return [
                 {
-                    'id': note.id,
-                    'title': note.title,
-                    'keywords': [keyword.word for keyword in note.keywords],
-                    'author': note.author,  # 确保这里包含 author
-                    # ... 其他字段 ...
+                    'id': note['id'],
+                    'title': note['title'],
+                    'author': note['author'],
+                    'keywords': note['keywords'].split(',') if note['keywords'] else []
                 }
                 for note in notes
             ]
+        except sqlite3.Error as e:
+            logger.error(f"获取所有笔记时出错: {e}")
+            return []
+
+    def update_note(self, note_id, **kwargs):
+        try:
+            set_clause = ', '.join([f"{k} = ?" for k in kwargs.keys()])
+            values = list(kwargs.values())
+            values.append(note_id)
+            self.cursor.execute(f"UPDATE notes SET {set_clause} WHERE id = ?", values)
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"更新笔记时出错: {e}")
+            self.conn.rollback()
+            return False
+
+    def get_all_keywords(self):
+        try:
+            self.cursor.execute("SELECT DISTINCT word FROM keywords")
+            return [row['word'] for row in self.cursor.fetchall()]
+        except sqlite3.Error as e:
+            logger.error(f"获取所有关键词时出错: {e}")
+            return []
+
+    def close(self):
+        self.conn.close()
