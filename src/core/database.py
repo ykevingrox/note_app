@@ -10,6 +10,7 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
         self.create_tables()
+        self.print_table_info()
 
     def create_tables(self):
         self.cursor.execute('''
@@ -21,7 +22,9 @@ class Database:
             domain TEXT,
             author TEXT,
             creation_date TEXT,
-            file_path TEXT
+            file_path TEXT,
+            ai_prompt TEXT,
+            ai_response TEXT
         )
         ''')
 
@@ -44,14 +47,19 @@ class Database:
 
         self.conn.commit()
 
-    def add_note(self, title, content, url=None, domain=None, keywords=None, author=None, creation_date=None, file_path=None):
+    def add_note(self, title, content, url=None, domain=None, keywords=None, author=None, creation_date=None, file_path=None, ai_prompt=None, ai_response=None):
         try:
+            logger.info(f"Attempting to add note: {title}")
+            logger.info(f"AI Prompt: {ai_prompt}")
+            logger.info(f"AI Response: {ai_response}")
+            
             self.cursor.execute('''
-            INSERT INTO notes (title, content, url, domain, author, creation_date, file_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (title, content, url, domain, author, creation_date, file_path))
+            INSERT INTO notes (title, content, url, domain, author, creation_date, file_path, ai_prompt, ai_response)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (title, content, url, domain, author, creation_date, file_path, ai_prompt, ai_response))
             
             note_id = self.cursor.lastrowid
+            logger.info(f"Note added successfully with ID: {note_id}")
 
             if keywords:
                 for word in keywords:
@@ -64,6 +72,8 @@ class Database:
             return note_id
         except sqlite3.Error as e:
             logger.error(f"添加笔记时出错: {e}")
+            logger.error(f"SQL: INSERT INTO notes (title, content, url, domain, author, creation_date, file_path, ai_prompt, ai_response) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            logger.error(f"Values: {(title, content, url, domain, author, creation_date, file_path, ai_prompt, ai_response)}")
             self.conn.rollback()
             return None
 
@@ -80,6 +90,9 @@ class Database:
         if note:
             note_dict = dict(note)
             note_dict['keywords'] = note_dict['keywords'].split(',') if note_dict['keywords'] else []
+            # 确保 ai_prompt 和 ai_response 字段存在
+            note_dict['ai_prompt'] = note_dict.get('ai_prompt', '')
+            note_dict['ai_response'] = note_dict.get('ai_response', '')
             return note_dict
         return None
 
@@ -157,9 +170,13 @@ class Database:
 
     def update_note(self, note_id, **kwargs):
         try:
-            set_clause = ', '.join([f"{k} = ?" for k in kwargs.keys()])
-            values = list(kwargs.values())
+            allowed_fields = ['title', 'content', 'url', 'domain', 'author', 'creation_date', 'file_path', 'ai_prompt', 'ai_response']
+            update_fields = {k: v for k, v in kwargs.items() if k in allowed_fields}
+            
+            set_clause = ', '.join([f"{k} = ?" for k in update_fields.keys()])
+            values = list(update_fields.values())
             values.append(note_id)
+            
             self.cursor.execute(f"UPDATE notes SET {set_clause} WHERE id = ?", values)
             self.conn.commit()
             return True
@@ -178,3 +195,13 @@ class Database:
 
     def close(self):
         self.conn.close()
+
+    def print_table_info(self):
+        try:
+            self.cursor.execute("PRAGMA table_info(notes)")
+            columns = self.cursor.fetchall()
+            logger.info("Notes table structure:")
+            for column in columns:
+                logger.info(f"Column: {column['name']}, Type: {column['type']}")
+        except sqlite3.Error as e:
+            logger.error(f"获取表信息时出错: {e}")

@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QTreeView, QLineEdit, QTextEdit, QPushButton, QMessageBox, QProgressBar, QStatusBar
+from PyQt5.QtWidgets import QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QTreeView, QLineEdit, QTextEdit, QPushButton, QMessageBox, QProgressBar, QStatusBar, QLabel
 from PyQt5.QtGui import QStandardItemModel, QStandardItem, QFont, QIcon
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QModelIndex, QUrl
 from .drag_drop import DropArea
@@ -7,6 +7,7 @@ from core.database import Database
 from core.keyword_manager import KeywordManager
 from core.cloud_storage import CloudStorage
 from core.pdf_handler import extract_pdf_info
+from core.ai_handler import call_ai_model
 import re
 from datetime import datetime
 import pytz
@@ -26,6 +27,18 @@ class ScraperThread(QThread):
         result = scrape_webpage(self.url)
         if result:
             self.result_ready.emit(result)
+
+class AIThread(QThread):
+    result_ready = pyqtSignal(str)
+
+    def __init__(self, content, prompt):
+        super().__init__()
+        self.content = content
+        self.prompt = prompt
+
+    def run(self):
+        result = call_ai_model(self.content, self.prompt)
+        self.result_ready.emit(result)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -64,7 +77,18 @@ class MainWindow(QMainWindow):
         self.drop_area.dropEvent = self.handle_drop
         right_layout.addWidget(self.drop_area, 1)
 
-        # 关键词输入
+        # 调用大模型的输入框和按钮（移到关键词输入之前）
+        self.ai_prompt_input = QTextEdit()  # 使用 QTextEdit 替代 QLineEdit
+        self.ai_prompt_input.setPlaceholderText("输入 prompt 调用大模型")
+        self.ai_prompt_input.setFixedHeight(75)  # 设置固定高度，大约三行的高度
+        self.call_ai_button = QPushButton("调用大模型")
+        self.call_ai_button.setEnabled(False)
+        ai_layout = QHBoxLayout()
+        ai_layout.addWidget(self.ai_prompt_input, 3)  # 给予输入框更多的水平空间
+        ai_layout.addWidget(self.call_ai_button, 1)
+        right_layout.addLayout(ai_layout)
+
+        # 关键词输入（保持不变，但位置调整到大模型调用之后）
         keyword_layout = QHBoxLayout()
         self.keyword_input = QLineEdit()
         self.keyword_input.setPlaceholderText("输入关键词（用逗号分隔多个关键词）")
@@ -73,7 +97,7 @@ class MainWindow(QMainWindow):
         keyword_layout.addWidget(self.add_keyword_button)
         right_layout.addLayout(keyword_layout)
 
-        # 内容预览
+        # 内容预览（保持不变）
         self.content_preview = QTextEdit()
         self.content_preview.setReadOnly(True)
         right_layout.addWidget(self.content_preview, 2)
@@ -91,6 +115,16 @@ class MainWindow(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         right_layout.addWidget(self.progress_bar)
+
+        # 添加 AI 响应显示框
+        self.ai_response_display = QTextEdit()
+        self.ai_response_display.setReadOnly(True)
+        self.ai_response_display.setPlaceholderText("AI 响应将显示在这里")
+        ai_response_layout = QVBoxLayout()
+        ai_response_label = QLabel("AI 响应:")
+        ai_response_layout.addWidget(ai_response_label)
+        ai_response_layout.addWidget(self.ai_response_display)
+        right_layout.addLayout(ai_response_layout)
 
         # 添加状态栏
         self.setStatusBar(QStatusBar())
@@ -116,6 +150,9 @@ class MainWindow(QMainWindow):
         # 添加新的同步按钮连接
         self.sync_button.clicked.connect(self.sync_with_oss)
 
+        # 在 init_connections 方法中添加新的连接
+        self.call_ai_button.clicked.connect(self.handle_call_ai)
+
     def handle_url_drop(self, url):
         self.drop_area.setText("正在抓取网页内容...")
         self.scraper_thread = ScraperThread(url)
@@ -134,7 +171,7 @@ class MainWindow(QMainWindow):
             self.content_preview.setText("抓取网页内容失败")
 
     def split_keywords(self, keyword_string):
-        # 使用正则表达式拆分关键词，同时处理英文逗号
+        # 使用正则表达式拆分关键，同时处理英文逗号
         return [kw.strip() for kw in re.split(r'[,，]', keyword_string) if kw.strip()]
 
     def handle_keyword_input(self):
@@ -224,10 +261,12 @@ class MainWindow(QMainWindow):
         parent = item.parent()
         if parent is None:  # 这是一个笔记项
             self.delete_button.setEnabled(True)
+            self.call_ai_button.setEnabled(True)  # 启用 AI 调用按钮
             self.current_note_id = item.data()
             self.display_note_content(self.current_note_id)
         else:  # 这是一个关键词项
             self.delete_button.setEnabled(True)
+            self.call_ai_button.setEnabled(True)  # 启用 AI 调用按钮
             self.current_note_id = parent.data()
             self.display_note_content(self.current_note_id)
 
@@ -240,8 +279,13 @@ class MainWindow(QMainWindow):
                                          f"创建日期: {note['creation_date']}\n"
                                          f"关键词: {', '.join(note['keywords'])}\n\n"
                                          f"内容预览:\n{note['content'][:500]}...")
+            if note.get('ai_response'):
+                self.ai_response_display.setText(note['ai_response'])
+            else:
+                self.ai_response_display.clear()
         else:
             self.content_preview.setText("无法加载笔记内容")
+            self.ai_response_display.clear()
 
     def handle_delete_note(self):
         if hasattr(self, 'current_note_id'):
@@ -346,3 +390,49 @@ class MainWindow(QMainWindow):
     def merge_databases(self, local_db, cloud_db):
         # 实现数据库合并逻辑
         pass
+
+    # 添加新的方法来处理调用大模型的逻辑
+    def handle_call_ai(self):
+        if hasattr(self, 'current_note_id'):
+            prompt = self.ai_prompt_input.toPlainText().strip()
+            if prompt:
+                self.call_ai_button.setEnabled(False)
+                self.call_ai_button.setText("正在调用...")
+                note = self.db.get_note_by_id(self.current_note_id)
+                if note:
+                    self.ai_thread = AIThread(note['content'], prompt)
+                    self.ai_thread.result_ready.connect(self.handle_ai_result)
+                    self.ai_thread.start()
+                else:
+                    QMessageBox.warning(self, "错误", "无法获取笔记内容")
+            else:
+                QMessageBox.warning(self, "提示", "请输入 prompt")
+        else:
+            QMessageBox.warning(self, "提示", "请先选择一个笔记")
+
+    def handle_ai_result(self, result):
+        self.call_ai_button.setEnabled(True)
+        self.call_ai_button.setText("调用大模型")
+        if result:
+            self.update_note_with_ai_response(result)
+            self.ai_response_display.setText(result)
+            self.ai_response_display.ensureCursorVisible()
+        else:
+            QMessageBox.warning(self, "错误", "调用大模型失败")
+
+    def update_note_with_ai_response(self, ai_response):
+        if hasattr(self, 'current_note_id'):
+            current_note = self.db.get_note_by_id(self.current_note_id)
+            if current_note:
+                ai_prompt = self.ai_prompt_input.toPlainText().strip()
+                success = self.db.update_note(self.current_note_id, ai_prompt=ai_prompt, ai_response=ai_response)
+                if success:
+                    self.display_note_content(self.current_note_id)  # 刷新显示
+                    QMessageBox.information(self, "成功", "笔记已更新")
+                else:
+                    QMessageBox.warning(self, "错误", "更新笔记失败")
+            else:
+                QMessageBox.warning(self, "错误", "无法获取当前笔记")
+        else:
+            QMessageBox.warning(self, "错误", "没有选中的笔记")
+
