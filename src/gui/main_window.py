@@ -1,5 +1,5 @@
-from PyQt5.QtWidgets import QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QTreeView, QLineEdit, QTextEdit, QPushButton, QMessageBox, QProgressBar, QStatusBar, QLabel
-from PyQt5.QtGui import QStandardItemModel, QStandardItem, QFont, QIcon
+from PyQt5.QtWidgets import QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QTreeView, QLineEdit, QTextEdit, QPushButton, QMessageBox, QProgressBar, QStatusBar, QLabel, QSplitter, QSpacerItem, QSizePolicy, QFrame
+from PyQt5.QtGui import QStandardItemModel, QStandardItem, QFont, QIcon, QColor, QPalette
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QModelIndex, QUrl
 from .drag_drop import DropArea
 from core.web_scraper import scrape_webpage
@@ -47,13 +47,51 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Mac笔记工具")
         self.setGeometry(100, 100, 1000, 600)
 
+        # 定义按钮样式为类属性
+        self.button_style = """
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 5px 15px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+            }
+        """
+
+        # 添加整体样式
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f0f0f0;
+            }
+            QLineEdit, QTextEdit {
+                border: 1px solid #dcdcdc;
+                border-radius: 3px;
+                padding: 3px;
+            }
+        """)
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        layout = QHBoxLayout()
+        main_layout = QVBoxLayout(central_widget)
+
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # 左侧部件
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        
+        # 右侧部件
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
 
         # 左侧文件结构
-        left_layout = QVBoxLayout()
         self.file_tree = QTreeView()
         self.file_tree.setIndentation(15)  # 设置缩进15像素
         self.file_model = QStandardItemModel()
@@ -64,12 +102,17 @@ class MainWindow(QMainWindow):
         # 搜索框
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("输入关键词进行精确搜索")
+        self.search_input.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid #dcdcdc;
+                border-radius: 15px;
+                padding: 5px 15px;
+            }
+        """)
         left_layout.addWidget(self.search_input)
 
-        layout.addLayout(left_layout, 1)
+        splitter.addWidget(left_widget)
 
-        right_layout = QVBoxLayout()
-        
         # 拖放区域
         self.drop_area = DropArea()
         self.drop_area.setAcceptDrops(True)
@@ -105,15 +148,29 @@ class MainWindow(QMainWindow):
         # 添加删除按钮
         self.delete_button = QPushButton("删除笔记")
         self.delete_button.setEnabled(False)  # 初始时禁用删除按钮
+        self.delete_button.setStyleSheet(self.button_style)
         right_layout.addWidget(self.delete_button)
 
         # 在右侧布局中添加同步按钮和进度条
         self.sync_button = QPushButton("同步到阿里云 OSS")
         self.sync_button.setIcon(QIcon("path/to/sync_icon.png"))
+        self.sync_button.setStyleSheet(self.button_style)
         right_layout.addWidget(self.sync_button)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #dcdcdc;
+                border-radius: 5px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+                width: 10px;
+                margin: 0.5px;
+            }
+        """)
         right_layout.addWidget(self.progress_bar)
 
         # 添加 AI 响应显示框
@@ -129,15 +186,58 @@ class MainWindow(QMainWindow):
         # 添加状态栏
         self.setStatusBar(QStatusBar())
 
-        layout.addLayout(right_layout, 2)
+        splitter.addWidget(right_widget)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
 
-        central_widget.setLayout(layout)
+        main_layout.addWidget(splitter)
 
         self.db = Database()
         self.keyword_manager = KeywordManager(self.db)
         self.cloud_storage = CloudStorage()
         self.init_connections()
         self.update_file_tree()
+
+        font = QFont("Arial", 11)
+        self.setFont(font)
+
+        # 文件树样式
+        self.file_tree.setStyleSheet("""
+            QTreeView {
+                background-color: #ffffff;
+                border: 1px solid #dcdcdc;
+                border-radius: 3px;
+            }
+            QTreeView::item:hover {
+                background-color: #e6f3ff;
+            }
+            QTreeView::item:selected {
+                background-color: #3399ff;
+                color: white;
+            }
+        """)
+
+        # 应用按钮样式
+        self.add_keyword_button.setStyleSheet(self.button_style)
+        self.delete_button.setStyleSheet(self.button_style)
+        self.sync_button.setStyleSheet(self.button_style)
+        self.call_ai_button.setStyleSheet(self.button_style)
+
+        # 预览样式
+        preview_style = """
+            QTextEdit {
+                background-color: #ffffff;
+                border: 1px solid #dcdcdc;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """
+        self.content_preview.setStyleSheet(preview_style)
+        self.ai_response_display.setStyleSheet(preview_style)
+
+        right_layout.addItem(QSpacerItem(20, 10, QSizePolicy.Minimum, QSizePolicy.Fixed))
+        right_layout.addWidget(self.create_horizontal_line())
+        right_layout.addItem(QSpacerItem(20, 10, QSizePolicy.Minimum, QSizePolicy.Fixed))
 
     def init_connections(self):
         self.drop_area.url_dropped.connect(self.handle_url_drop)
@@ -292,7 +392,7 @@ class MainWindow(QMainWindow):
             note = self.db.get_note_by_id(self.current_note_id)
             if note:
                 reply = QMessageBox.question(self, '确认删除', 
-                                             f'确定要删除笔记 "{note["title"]}" 吗？',
+                                             f'确定要删笔记 "{note["title"]}" 吗？',
                                              QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 if reply == QMessageBox.Yes:
                     if self.db.delete_note(self.current_note_id):
@@ -435,4 +535,10 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "错误", "无法获取当前笔记")
         else:
             QMessageBox.warning(self, "错误", "没有选中的笔记")
+
+    def create_horizontal_line(self):
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        return line
 
